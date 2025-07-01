@@ -8,4 +8,4 @@ Week 4 - Report and Powerpoint
 //Code repo is built on Python 3, Charm Crypto to encrypt files at the client level with ABE before sending to cloud IPFS. 
 //Each user is issued an individual key which contains attributes
 //Only that key can decrypt allowed files
-Jonathan Persaud | Southeastern Louisiana University
+[Jonathan Persaud | Southeastern Louisiana University]
