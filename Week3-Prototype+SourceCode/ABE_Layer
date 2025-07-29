@@ -1,0 +1,99 @@
+#!/bin/bash
+
+PREFIX="southeastern"      # CP-ABE system prefix
+SCHEME="CP"                # CP-ABE scheme
+KA_SERVER="http://127.0.0.1:7000/register" KA server endpoint
+
+wrap_aes_key() {
+    echo "=== CP-ABE AES Key Wrapper==="
+    read -p "Enter AES key (32 hex chars) or leave blank to generate random: " AES_INPUT
+
+    if [[ -z "$AES_INPUT" ]]; then
+        AES_INPUT=$(openssl rand -hex 32)
+        echo "Generated random AES key: $AES_INPUT"
+    else
+        echo "Using provided AES key: $AES_INPUT"
+    fi
+
+    AES_KEY_FILE="aeskey_temp"
+    echo -n "$AES_INPUT" > "$AES_KEY_FILE"
+
+    read -p "Enter attribute string for policy (e.g., student,cs): " POLICY
+    read -p "Enter file ID (CID) to register with KA: " FILE_ID
+    read -p "Enter authorized users (comma separated): " USERS
+
+    echo "Encrypting AES key under policy: $POLICY ..."
+    WRAPPED_FILE="wrapped_key.cpabe"
+    oabe_enc -s "$SCHEME" -p "$PREFIX" -i "$AES_KEY_FILE" -o "$WRAPPED_FILE" -e "$POLICY"
+
+    if [[ $? -eq 0 ]]; then
+        echo "AES key successfully wrapped."
+        echo "Base64-encoded CP-ABE key (copy and send to KA):"
+        BASE64_KEY=$(base64 -w 0 "$WRAPPED_FILE")
+        echo "$BASE64_KEY"
+        echo
+
+        # AUTO-SEND TO KA SERVER
+        echo "[*] Sending encrypted key to KA server..."
+        curl -s -X POST "$KA_SERVER" \
+            -H "Content-Type: application/json" \
+            -d "{\"file_id\":\"$FILE_ID\",\"aes_key\":\"$BASE64_KEY\",\"authorized_users\":[\"$(echo $USERS | sed 's/,/","/g')\"]}" \
+            && echo "[+] Successfully sent to KA." \
+            || echo "[!] Failed to send to KA server."
+        # ============================================
+
+    else
+        echo "Error: AES key encryption failed."
+    fi
+
+    rm -f "$AES_KEY_FILE"
+}
+
+unwrap_aes_key() {
+    echo "=== CP-ABE AES Key Unwrapper ==="
+    echo "Paste the Base64-encoded CP-ABE key below."
+    echo "End input with Ctrl+D when done."
+    BASE64_KEY=$(</dev/stdin)
+
+    TEMP_WRAPPED_FILE="pasted_wrapped_key.cpabe"
+    echo "$BASE64_KEY" | base64 -d > "$TEMP_WRAPPED_FILE"
+
+    read -p "Enter your user secret key file (e.g., student.key): " USER_KEY
+
+    DECRYPTED_AES_FILE="decrypted_aes.key"
+    echo "Decrypting AES key..."
+    oabe_dec -s "$SCHEME" -p "$PREFIX" -i "$TEMP_WRAPPED_FILE" -k "$USER_KEY" -o "$DECRYPTED_AES_FILE"
+
+    if [[ $? -eq 0 ]]; then
+        echo "AES key successfully recovered."
+        echo "Recovered AES Key:"
+        cat "$DECRYPTED_AES_FILE"
+        echo
+    else
+        echo "Error: CP-ABE decryption failed."
+    fi
+
+    rm -f "$TEMP_WRAPPED_FILE"
+}
+
+while true; do
+    clear
+    echo "==============================="
+    echo "CP-ABE AES Key Menu"
+    echo "==============================="
+    echo "[1] Encrypt (wrap) AES key"
+    echo "[2] Decrypt (unwrap) AES key"
+    echo "[3] Exit"
+    echo "-------------------------------"
+    read -p "Choose an option [1-3]: " CHOICE
+
+    case "$CHOICE" in
+        1) wrap_aes_key ;;
+        2) unwrap_aes_key ;;
+        3) echo "Exiting."; exit 0 ;;
+        *) echo "Invalid option. Try again." ;;
+    esac
+
+    echo
+    read -p "Press Enter to return to menu..."
+done
