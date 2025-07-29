@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+
+#Proxy Re-encryption Server Menu + HTTP
+import sys
+import base64, json
+from flask import Flask, request, jsonify
+from umbral import SecretKey, Signer, encrypt, generate_kfrags, reencrypt, decrypt_reencrypted, CapsuleFrag
+from umbral.keys import PublicKey
+from umbral.capsule import Capsule
+
+# 
+#Note I used student and professor bc I was confusing myself writing
+#but those just represent sender and reciever
+
+#This unified program is derived from each seaprate client side / server side program I just combined for dmeonstartion purposes
+#Individual programs availbale upon request
+
+# user key generation
+def generate_keys():
+    student_secret = SecretKey.random()
+    student_public = student_secret.public_key()
+    try:
+        private_key_b64 = base64.b64encode(bytes(student_secret)).decode()
+    except Exception:
+        private_key_b64 = base64.b64encode(student_secret.to_secret_bytes()).decode()
+    public_key_b64 = base64.b64encode(bytes(student_public)).decode()
+    return {"public_key": public_key_b64, "private_key": private_key_b64}
+
+
+# sender client side logic combined with server logic
+def encrypt_aes(aes_key: str, student_pub_b64: str):
+    try:
+        student_public_bytes = base64.b64decode(student_pub_b64)
+        student_public = PublicKey.from_bytes(student_public_bytes)
+    except Exception as e:
+        return {"error": f"Invalid student public key: {str(e)}"}
+
+    professor_secret = SecretKey.random()
+    professor_public = professor_secret.public_key()
+    signing_key = SecretKey.random()
+    verifying_key = signing_key.public_key()
+    professor_signer = Signer(signing_key)
+
+    capsule, ciphertext = encrypt(professor_public, aes_key.encode())
+    kfrags = generate_kfrags(
+        delegating_sk=professor_secret,
+        receiving_pk=student_public,
+        signer=professor_signer,
+        threshold=1,
+        shares=1
+    )
+    cfrag = reencrypt(capsule, kfrags[0])
+# want a shareable string that a sender can send to anyone easily send to anyone so we output a BLOB
+    data = {
+        "professor_pub": base64.b64encode(bytes(professor_public)).decode(),
+        "verifying_key": base64.b64encode(bytes(verifying_key)).decode(),
+        "capsule": base64.b64encode(bytes(capsule)).decode(),
+        "cfrag": base64.b64encode(bytes(cfrag)).decode(),
+        "ciphertext": base64.b64encode(ciphertext).decode()
+    }
+    blob = base64.b64encode(json.dumps(data).encode()).decode()
+    return {"blob": blob}
+
+# The reciever gets that BLOB and uses this client side program to decrypt it with their private key back to the original AES key
+# the logic for both clients and server are combined for ease of testing but are easily separated
+def decrypt_blob(private_key_b64: str, blob_b64: str):
+    try:
+        private_key_bytes = base64.b64decode(private_key_b64)
+        try:
+            student_secret = SecretKey.from_bytes(private_key_bytes)
+        except AttributeError:
+            import umbral.keys
+            student_secret = umbral.keys.SecretKey.from_bytes(private_key_bytes)
+    except Exception as e:
+        return {"error": f"Invalid private key: {str(e)}"}
+
+    try:
+        json_data = base64.b64decode(blob_b64).decode()
+        data = json.loads(json_data)
+        professor_public = PublicKey.from_bytes(base64.b64decode(data["professor_pub"]))
+        verifying_key = PublicKey.from_bytes(base64.b64decode(data["verifying_key"]))
+        capsule = Capsule.from_bytes(base64.b64decode(data["capsule"]))
+        cfrag = CapsuleFrag.from_bytes(base64.b64decode(data["cfrag"]))
+        ciphertext = base64.b64decode(data["ciphertext"])
+        verified_cfrag = cfrag.verify(
+            capsule=capsule,
+            verifying_pk=verifying_key,
+            delegating_pk=professor_public,
+            receiving_pk=student_secret.public_key()
+        )
+        cleartext = decrypt_reencrypted(
+            receiving_sk=student_secret,
+            delegating_pk=professor_public,
+            capsule=capsule,
+            verified_cfrags=[verified_cfrag],
+            ciphertext=ciphertext
+        )
+        return {"aes_key": cleartext.decode()}
+    except Exception as e:
+        return {"error": f"Decryption failed: {str(e)}"}
+# BLOB is converted back to AES key
+ 
+# I have separate client side / server side programs 
+
+# HTTP SERVER MODE
+
+
+app = Flask(__name__)
+
+@app.route("/generate_key", methods=["GET"])
+def api_generate_key():
+    return jsonify(generate_keys())
+
+@app.route("/encrypt", methods=["POST"])
+def api_encrypt():
+    data = request.json
+    aes_key = data.get("aes_key")
+    student_pub = data.get("student_pub")
+    if not aes_key or not student_pub:
+        return jsonify({"error": "Missing parameters"}), 400
+    return jsonify(encrypt_aes(aes_key, student_pub))
+
+@app.route("/decrypt", methods=["POST"])
+def api_decrypt():
+    data = request.json
+    private_key = data.get("private_key")
+    blob = data.get("blob")
+    if not private_key or not blob:
+        return jsonify({"error": "Missing parameters"}), 400
+    return jsonify(decrypt_blob(private_key, blob))
+
+def start_server():
+    print("[*] Proxy Re-Encryption API running at http://0.0.0.0:5000")
+    app.run(host="0.0.0.0", port=5000, debug=True)
+
+
+# Local Menu
+
+
+def menu_key_generator():
+    keys = generate_keys()
+    print("\nPUBLIC KEY (share with sender):")
+    print(keys["public_key"])
+    print("\nPRIVATE KEY (keep secret):")
+    print(keys["private_key"])
+    print("\nKeys generated successfully!")
+
+def menu_sender_encrypt():
+    aes_key = input("Enter AES key to share: ").strip()
+    student_pub = input("Enter recipient's public key: ").strip()
+    result = encrypt_aes(aes_key, student_pub)
+    if "blob" in result:
+        print("\n=== Encrypted Blob ===")
+        print(result["blob"])4
+    else:
+        print(f"Error: {result['error']}")
+
+def menu_receiver_decrypt():
+    private_key = input("Enter your private key: ").strip()
+    blob = input("Enter encrypted blob: ").strip()
+    result = decrypt_blob(private_key, blob)
+    if "aes_key" in result:
+        print(f"\n=== SUCCESS! Decrypted AES Key ===\n{result['aes_key']}")
+    else:
+        print(f"Error: {result['error']}")
+
+def menu():
+    while True:
+        print("\n--- Proxy Re-Encryption Menu ---")
+        print("1. Generate Key Pair ")
+        print("2. Sender Encrypt AES Key")
+        print("3. Receiver Decrypt AES Key")
+        print("4. Exit")
+        choice = input("Choose an option (1-4): ").strip()
+        if choice == "1":
+            menu_key_generator()
+        elif choice == "2":
+            menu_sender_encrypt()
+        elif choice == "3":
+            menu_receiver_decrypt()
+        elif choice == "4":
+            print("Exiting...")
+            break
+        else:
+            print("Invalid choice.")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--server":
+        start_server()
+    else:
+        menu()
