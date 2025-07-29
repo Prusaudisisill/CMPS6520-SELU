@@ -1,0 +1,140 @@
+import json
+import os
+import logging
+import sys
+from datetime import datetime
+
+# CONFIGURATION
+KEY_DB_FILE = "key_database.json"
+LOG_FILE = "ka_audit.log"
+
+# SETUP LOGGING
+logging.basicConfig(filename=LOG_FILE, level=logging.INFO,
+                    format="%(asctime)s - %(levelname)s - %(message)s")
+#load database from json file
+def load_db():
+    if not os.path.exists(KEY_DB_FILE):
+        return {}
+    with open(KEY_DB_FILE, "r") as f:
+        return json.load(f)
+#save databse dictionary to file
+def save_db(db):
+    with open(KEY_DB_FILE, "w") as f:
+        json.dump(db, f, indent=4)
+#takes and stores aes keys
+def register_file(file_id, aes_key, authorized_users):
+    db = load_db()
+    if file_id in db:
+        logging.warning(f"Attempt to re-register existing file {file_id}")
+        return {"status": "error", "message": f"File {file_id} already exists."}
+    db[file_id] = {
+        "aes_key": aes_key,
+        "authorized_users": authorized_users,
+        "created_at": datetime.utcnow().isoformat()
+    }
+    save_db(db)
+    logging.info(f"Registered file {file_id} with authorized users: {authorized_users}")
+    return {"status": "success", "message": f"File {file_id} registered successfully."}
+
+# retrieve key upon user qeury if they match attributes or usrname
+def get_key(file_id, username):
+    db = load_db()
+    if file_id not in db:
+        logging.warning(f"User '{username}' attempted to access unknown file {file_id}")
+        return None
+    if username not in db[file_id]["authorized_users"]:
+        logging.warning(f"Access denied: user '{username}' for file {file_id}")
+        return None
+    logging.info(f"Access granted: user '{username}' retrieved key for file {file_id}")
+    return db[file_id]["aes_key"]
+
+#shows current files
+#need to add authentication logic and lock this function down but ran out of time
+def list_files():
+    return load_db()
+
+
+# HTTP SERVER
+
+def start_server():
+    from flask import Flask, request, jsonify
+    app = Flask(__name__)
+
+    @app.route("/register", methods=["POST"])
+    def api_register():
+        data = request.json
+        file_id = data.get("file_id")
+        aes_key = data.get("aes_key")
+        users = data.get("authorized_users", [])
+        if not file_id or not aes_key:
+            return jsonify({"status": "error", "message": "Missing parameters"}), 400
+        return jsonify(register_file(file_id, aes_key, users))
+
+    @app.route("/get_key", methods=["POST"])
+    def api_get_key():
+        data = request.json
+        file_id = data.get("file_id")
+        username = data.get("username")
+        if not file_id or not username:
+            return jsonify({"status": "error", "message": "Missing parameters"}), 400
+        key = get_key(file_id, username)
+        if key:
+            return jsonify({"status": "success", "aes_key": key})
+        else:
+            return jsonify({"status": "error", "message": "Access denied or file not found"}), 403
+
+    @app.route("/list_files", methods=["GET"])
+    def api_list_files():
+        return jsonify(list_files())
+
+    print("[*] KA Server running on http://0.0.0.0:7000")
+    app.run(host="0.0.0.0", port=7000, debug=True)
+
+
+# Local MENU
+
+def menu():
+    print("=== Key Authority (KA) ===")
+    while True:
+        print("\nOptions:")
+        print("1. Register new file")
+        print("2. Request AES key")
+        print("3. List all files")
+        print("4. Exit")
+        choice = input("Select option: ")
+
+        if choice == "1":
+            file_id = input("Enter file ID (CID): ").strip()
+            aes_key = input("Enter ABE wrapped AES key: ").strip()
+            users = input("Enter authorized users (comma-separated): ").split(",")
+            users = [u.strip() for u in users if u.strip()]
+            result = register_file(file_id, aes_key, users)
+            print(result["message"])
+        elif choice == "2":
+            file_id = input("Enter file ID (CID): ").strip()
+            username = input("Enter your username or attributes: ").strip()
+            key = get_key(file_id, username)
+            if key:
+                print(f"[+] ABE wrapped AES key for file {file_id}: {key}")
+            else:
+                print("[!] Access denied or file not found.")
+        elif choice == "3":
+            db = list_files()
+            for fid, details in db.items():
+                print(f"File ID: {fid}")
+                print(f"  Authorized Users: {details['authorized_users']}")
+                print(f"  Created At: {details['created_at']}\n")
+        elif choice == "4":
+            print("Exiting KA.")
+            break
+        else:
+            print("Invalid option.")
+
+
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--server":
+        start_server()
+    else:
+        menu()
